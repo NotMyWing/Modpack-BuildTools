@@ -1,0 +1,3 @@
+[submodule "modpack"]
+	path = modpack
+	url = https://github.com/Exaxxion/Omnifactory.git
