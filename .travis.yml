@@ -3,15 +3,13 @@ node_js:
   - 13
 
 script:
-  - git submodule update && cd ./modpack && git checkout $BRANCH && git reset --hard "$COMMITHASH" && cd ..
+  - git submodule update && cd ./modpack && git checkout $BRANCH && git reset --hard "$COMMITHASH" && cd .. && gulp
 
 before-deploy:
-  - mv ./build/
+  - mv ./build/server.zip $ARCHIVENAME.zip
 
 deploy:
   - provider: releases
-    api_key: "$GITHUB_TOKEN"
-    file: 
-    - "reindex_dist/database.json"
-    - "reindex_dist/database.min.json"
-    skip_cleanup: true
+    token: "$GITHUB_TOKEN"
+    file:
+      - $ARCHIVENAME.zip
