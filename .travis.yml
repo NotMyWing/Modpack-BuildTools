@@ -3,13 +3,15 @@ node_js:
   - 13
 
 script:
-  - git submodule update && cd ./modpack && git checkout $BRANCH && git reset --hard "$COMMITHASH" && cd .. && gulp
+  - bash .travis.sh
 
 before-deploy:
   - mv ./build/server.zip ./build/$ARCHIVENAME.zip
 
 deploy:
   - provider: releases
+    overwrite: true
+    tag: $TAG
     skip_cleanup: true
     token: "$GITHUB_TOKEN"
     file:
