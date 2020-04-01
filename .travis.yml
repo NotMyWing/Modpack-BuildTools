@@ -6,10 +6,10 @@ script:
   - git submodule update && cd ./modpack && git checkout $BRANCH && git reset --hard "$COMMITHASH" && cd .. && gulp
 
 before-deploy:
-  - mv ./build/server.zip $ARCHIVENAME.zip
+  - mv ./build/server.zip ./build/$ARCHIVENAME.zip
 
 deploy:
   - provider: releases
     token: "$GITHUB_TOKEN"
     file:
-      - $ARCHIVENAME.zip
+      - ./build/$ARCHIVENAME.zip
