@@ -8,6 +8,7 @@ const unzip = require("unzipper");
 const Promise = require("bluebird");
 const { ConcurrentRetryDownloader, retryRequest } = require("./util/downloaders.js");
 const mustache = require("mustache");
+const through = require("through2");
 
 const MODPACK_MANIFEST = JSON.parse(fs.readFileSync("./modpack/manifest.json"));
 
