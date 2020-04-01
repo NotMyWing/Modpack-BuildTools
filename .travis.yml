@@ -1,0 +1,17 @@
+language: node_js
+node_js:
+  - 13
+
+script:
+  - git submodule update && cd ./modpack && git checkout $BRANCH && git reset --hard "$COMMITHASH" && cd ..
+
+before-deploy:
+  - mv ./build/
+
+deploy:
+  - provider: releases
+    api_key: "$GITHUB_TOKEN"
+    file: 
+    - "reindex_dist/database.json"
+    - "reindex_dist/database.min.json"
+    skip_cleanup: true

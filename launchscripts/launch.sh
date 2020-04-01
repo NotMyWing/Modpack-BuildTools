@@ -6,12 +6,12 @@
 # https://github.com/Neeve01 
 
 # DO NOT EDIT UNLESS YOU KNOW WHAT YOU'RE DOING
-FORGEJAR=./forge-1.12.2-14.23.5.2838-universal.jar
-JAVA_PARAMETERS=''
+FORGEJAR='{{forgeJar}}'
+JAVA_PARAMETERS='{{jvmArgs}}'
 
 # these you can edit
-MIN_RAM=2048M
-MAX_RAM=2048M
+MIN_RAM='{{minRAM}}'
+MAX_RAM='{{maxRAM}}'
 
 # DO NOT EDIT ANYTHING PAST THIS LINE
 LAUNCHPARAMS="-server -Xms$MIN_RAM -Xmx$MAX_RAM $JAVA_PARAMETERS -jar $FORGEJAR nogui"

@@ -2,46 +2,82 @@ const { src, task, series, dest } = require("gulp");
 const fs = require("fs");
 const del = require("del");
 const path = require("path");
-const log = require("fancy-log")
-const unzip = require("unzipper")
+const zip = require("gulp-zip");
+const log = require("fancy-log");
+const unzip = require("unzipper");
 const Promise = require("bluebird");
-const request = require("request");
-const requestPromise = require("request-promise");
+const { ConcurrentRetryDownloader, retryRequest } = require("./util/downloaders.js");
+const mustache = require("mustache");
 
 const MODPACK_MANIFEST = JSON.parse(fs.readFileSync("./modpack/manifest.json"));
 
 const FORGE_MAVEN = "https://files.minecraftforge.net/maven/";
 const MOJANG_MAVEN = "https://libraries.minecraft.net/";
-const DEST_FOLDER = "./dest";
+const ZIP_DEST_FOLDER = "build";
+
+const DEST_FOLDER = "build";
+const SERVER_DEST_FOLDER = path.join(DEST_FOLDER, "server");
 const TEMP_FOLDER = path.join(DEST_FOLDER, "temp");
 
 const LIBRARY_REG = /^(.+?):(.+?):(.+?)$/;
-const libraryToPath = (url, suffix) => {
-	const parsedURL = LIBRARY_REG.exec(url);
-	if (parsedURL) {
-		const package = parsedURL[1].replace(/\./g, "/");
-		const name = parsedURL[2];
-		const version = parsedURL[3];
 
-		if (suffix) {
-			suffix = `-${suffix}`;
-		} else {
-			suffix = "";
+const CONFIG = require("./config.default.js");
+if (!CONFIG || CONFIG.constructor !== Object) {
+	throw new Error(`Fatal Error: malformed default config file.`);
+}
+
+(() => {
+	const CUSTOM_CONFIG_PATH = "./config.js";
+	if (!CONFIG || CONFIG.constructor !== Object) {
+		throw new Error(`Fatal Error: malformed ${CONFIG_PATH}.`);
+	}
+
+	if (fs.existsSync(CUSTOM_CONFIG_PATH)) {
+		const customConfig = require(CUSTOM_CONFIG_PATH);
+		if (!customConfig || customConfig.constructor !== Object) {
+			throw new Error(`Fatal Error: malformed ${CUSTOM_CONFIG_PATH}.`);
 		}
-		const newURL = `${package}/${name}/${version}/${name}-${version}${suffix}.jar`
+
+		Object.assign(defaultConfig, customConfig);
+	}
+})();
+
+const localStorage = {};
+
+/**
+ * Parses the library name into path following the standard package naming convention.
+ * 
+ * Turns `package:name:version` into `package/name/version/name-version`.
+ * 
+ * @param {string} library 
+ */
+const libraryToPath = (library) => {
+	const parsedLibrary = LIBRARY_REG.exec(library);
+	if (parsedLibrary) {
+		const package = parsedLibrary[1].replace(/\./g, "/");
+		const name = parsedLibrary[2];
+		const version = parsedLibrary[3];
+
+		const newURL = `${package}/${name}/${version}/${name}-${version}`
 
 		return newURL;
 	}
 }
 
+/**
+ * Clean-up. Recursively removes `./dest/**`
+ */
 task("cleanup", (cb) => {
-	del.sync("./dest/**");
+	del.sync(DEST_FOLDER);
 	cb();
 });
 
+/**
+ * Creates `dest` and `temp` folders.
+ */
 task("create-folders", (cb) => {
 	const toCreate = [
-		DEST_FOLDER,
+		SERVER_DEST_FOLDER,
 		TEMP_FOLDER
 	];
 
@@ -53,30 +89,95 @@ task("create-folders", (cb) => {
 	cb();
 });
 
-const downloadLibraries = (manifest, cb) => {
-	const serverLibraries = manifest
-		.versionInfo
-		.libraries
-		.filter(x => x.serverreq);
+const DOWNLOADER = new ConcurrentRetryDownloader({
+	concurrency  : CONFIG.downloaderConcurrency
+	, checkHashes: CONFIG.downloaderCheckHashes
+	, maxRetries : CONFIG.downloaderMaxRetries
+})
+.on("start", (args) => {
+	log(`Downloading ${path.basename(args.fileDef.path)}...`)
+})
+.on("complete", (args) => {
+	const numFiles = args.total > 1 ? `(${args.index + 1} / ${args.total}) ` : "";
 
-	Promise.all(serverLibraries.map((library) => {
-		return new Promise((resolve) => {
-			const libraryPath = libraryToPath(library.name);
-			const localLibraryPath = path.join("./dest/libraries", libraryPath);
+	/**
+	 * Create a directory for the file.
+	 */
+	const dirname = path.dirname(args.fileDef.path);
+	if (!fs.existsSync(dirname)) {
+		fs.mkdirSync(dirname, { recursive: true })
+	}
+
+	/**
+	 * If file exists already, remove it.
+	 * A failed attempt might leave an malformed file.
+	 */
+	if (fs.existsSync(args.fileDef.path)) {
+		fs.unlinkSync(args.fileDef.path);
+	}
+
+	const fd = fs.openSync(args.fileDef.path, "wx");
+	fs.writeSync(fd, args.output);
+	fs.closeSync(fd);
+	log(numFiles + `Downloaded and saved ${path.basename(args.fileDef.path)}`)
+})
+.on("retry", (args) => {
+	log(`Failed to download ${path.basename(args.fileDef.path)}, retrying...`)
+});
+
+/**
+ * Wraps the `.download()` method of DOWNLOADER.
+ * 
+ * @param {FileDef[]} files Array of libraries to download.
+ * @param {(error?) => void} callback Optional callback to call once everything is downloaded.
+ */
+const downloadAndSaveFiles = (files, callback = null) => {
+	DOWNLOADER.download(files)
+		.then(() => {
+			if (callback) {
+				callback();
+			}
+		})
+		.catch((args) => {
+			if (callback) {
+				log();
+				if (args.fileDef && args.fileDef.path && args.error) {
+					log(`Failed to download ${path.basename(args.fileDef.path)}`)
+					callback(args.error);
+				} else {
+					callback(args);
+				}
+			}
+		});
+}
+
+/**
+ * Library wrapper for downloadFiles.
+ * 
+ * @param {string[]} libraries Array of libraries to download.
+ * @param {(error?) => void} callback Optional callback to call once everything is downloaded.
+ */
+const downloadLibraries = (libraries, callback = null) => {
+	downloadAndSaveFiles(
+		libraries.map((library) => {
+			const libraryPath = libraryToPath(library.name) + ".jar";
+			const localLibraryPath = path.join(SERVER_DEST_FOLDER, "libraries", libraryPath);
 			const url = library.url || MOJANG_MAVEN;
 
-			const directory = path.dirname(path.resolve(localLibraryPath));
-			fs.mkdirSync(directory, { recursive: true });
+			const def = {
+				url: url + libraryPath,
+				path: localLibraryPath,
+			}
 
-			log("Downloading", url + libraryPath, "...")
-			request(url + libraryPath)
-				.pipe(fs.createWriteStream(localLibraryPath))
-				.on("close", resolve);
-		})
-	})).then(() => {
-		log("Finished downloading Forge libraries.")
-		cb();
-	})
+			if (library.checksums) {
+				def.hashes = [
+					{ id: "sha1", hashes: library.checksums }
+				]
+			}
+
+			return def;
+		}), callback
+	);
 }
 
 const FORGE_VERSION_REG = /forge-(.+)/;
@@ -91,61 +192,83 @@ task("download-forge", (cb) => {
 	if (parsedForgeEntry) {
 		// Transform Forge version into Maven library
 		const forgeMavenLibrary = `net.minecraftforge:forge:${minecraft.version}-${parsedForgeEntry[1]}`;
-		const forgeInstallerPath = libraryToPath(forgeMavenLibrary, "installer");
-		const forgeUniversalPath = libraryToPath(forgeMavenLibrary, "universal");
+		const forgeInstallerPath = libraryToPath(forgeMavenLibrary) + "-installer.jar";
 		const localForgePath = path.join(TEMP_FOLDER, path.basename(forgeInstallerPath));
 
 		// Download the Forge installer
-		log("Downloading", FORGE_MAVEN + forgeInstallerPath, "...")
-		request(FORGE_MAVEN + forgeInstallerPath)
-			.pipe(fs.createWriteStream(localForgePath))
-			.on("close", () => {
-				log("Extracting the Forge installer...")
-				fs.createReadStream(localForgePath)
-					.pipe(unzip.Extract({ path: path.join(TEMP_FOLDER, "forge") }))
-					.on("close", () => {
-						log("Reading the manifest file...")
-						const manifest = JSON.parse(
-							fs.readFileSync(path.join(TEMP_FOLDER, "forge", "install_profile.json"))
+		downloadAndSaveFiles([{
+			url: FORGE_MAVEN + forgeInstallerPath
+			, path: localForgePath
+		}], () => {
+			log("Extracting the Forge installer...")
+			fs.createReadStream(localForgePath)
+				.pipe(unzip.Extract({ path: path.join(TEMP_FOLDER, "forge") }))
+				.on("close", () => {
+					log("Reading the manifest file...")
+					const manifest = JSON.parse(
+						fs.readFileSync(path.join(TEMP_FOLDER, "forge", "install_profile.json"))
+					);
+
+					if (manifest && manifest.versionInfo && manifest.versionInfo.libraries) {
+						const forgeUniversalPath = path.basename(
+							libraryToPath(forgeMavenLibrary) + "-universal.jar"
 						);
 
-						if (manifest && manifest.versionInfo && manifest.versionInfo.libraries) {
-							log("Copying the Forge file...")
-							fs.renameSync(
-								path.join(TEMP_FOLDER, "forge", path.basename(forgeUniversalPath))
-								, path.join(DEST_FOLDER, path.basename(forgeUniversalPath))
-							);
+						log("Copying the Forge file...")
+						fs.renameSync(
+							path.join(TEMP_FOLDER, "forge", forgeUniversalPath)
+							, path.join(SERVER_DEST_FOLDER, forgeUniversalPath)
+						);
 
-							log("Fetching server libraries...")
-							downloadLibraries(manifest, cb);
-						} else {
-							cb("Malformed Forge manifest file.")
-						}
-					});
-			});
+						localStorage.forgeJar = forgeUniversalPath;
+
+						log("Fetching server libraries...")
+						const serverLibraries = manifest
+							.versionInfo
+							.libraries
+							.filter(x => x.serverreq);
+
+						downloadLibraries(serverLibraries, cb);
+					} else {
+						cb("Malformed Forge manifest file.")
+					}
+				});
+		});
 	}
 });
 
 task("post-cleanup", (cb) => {
-	del(TEMP_FOLDER);
+	del.sync(TEMP_FOLDER);
 	cb();
 })
 
 const LAUNCHERMETA_VERSION_MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest.json";
 task("download-minecraft-server", (cb) => {
 	log("Fetching the Minecraft version manifest...")
-	requestPromise({ uri: LAUNCHERMETA_VERSION_MANIFEST, json: true }).then((manifest) => {
+
+	retryRequest(
+		CONFIG.downloaderMaxRetries
+		, { uri: LAUNCHERMETA_VERSION_MANIFEST, json: true }
+	).then((manifest) => {
 		const version = manifest.versions.find(x => x.id == MODPACK_MANIFEST.minecraft.version);
+
 		if (version) {
 			log(`Fetching the manifest file for Minecraft ${version.id}...`)
-			requestPromise({ uri: version.url, json: true }).then((versionManifest) => {
-				const serverJarFile = `minecraft_server.${version.id}.jar`
-				if (versionManifest.downloads && versionManifest.downloads.server) {
-					log(`Downloading ${serverJarFile}...`);
 
-					request(versionManifest.downloads.server.url)
-						.pipe(fs.createWriteStream(path.join(DEST_FOLDER, serverJarFile)))
-						.on("close", cb);
+			retryRequest(
+				CONFIG.downloaderMaxRetries
+				, { uri: version.url, json: true }
+			).then((versionManifest) => {
+				const serverJarFile = `minecraft_server.${version.id}.jar`
+				
+				if (versionManifest.downloads && versionManifest.downloads.server) {
+					downloadAndSaveFiles([{
+						url: versionManifest.downloads.server.url
+						, path: path.join(SERVER_DEST_FOLDER, serverJarFile)
+						, hashes: [
+							{ id: "sha1", hashes: versionManifest.downloads.server.sha1 }
+						]
+					}], cb);
 				} else {
 					cb(`No server jar file found for ${version.id}`);
 				}
@@ -159,62 +282,77 @@ task("download-minecraft-server", (cb) => {
 task("download-mods", (cb) => {
 	log("Fetching mods...");
 	
-	Promise.all(MODPACK_MANIFEST.files.map(file => {
-		return requestPromise(`https://addons-ecs.forgesvc.net/api/v2/addon/${file.projectID}/file/${file.fileID}/download-url`)
-	})).then(results => {
-		log(`Fetched ${results.length} mod files, downloading...`);
+	Promise.map(MODPACK_MANIFEST.files, file => {
+		return retryRequest(
+			CONFIG.downloaderMaxRetries
+			, {
+				uri: `https://addons-ecs.forgesvc.net/api/v2/addon/${file.projectID}/file/${file.fileID}`
+				, json: true
+			}
+		)
+	}, { concurrency: CONFIG.downloaderConcurrency }).then(modInfos => {
+		log(`Fetched ${modInfos.length} mods...`);
 
-		fs.mkdirSync(path.join(DEST_FOLDER, "mods"))
-
-		var counter = 1;
-		Promise.all(results.map(url => {
-			return new Promise((resolve) => {
-				const filename = path.join(DEST_FOLDER, "mods", path.basename(url));
-				var attempts = 0;
-				const retry = (previousErr) => {
-					attempts++;
-
-					if (attempts != 1) {
-						log(`Error downloading ${path.basename(url)}: ${previousErr}. Retrying...`);
-					} else if (attempts == 3) {
-						cb(`Fatal error downloading ${path.basename(url)}: ${previousErr}`);
-					}
-
-					if (fs.existsSync(filename)) {
-						fs.unlinkSync(filename);
-					}
-
-					const stream = fs.createWriteStream(filename);
-					request(url, {timeout: 10000})
-						.on("error", (err) => {
-							stream.destroy();
-							retry(err);
-						})
-						.on("complete", () => {
-							log(`(${counter++} / ${results.length}) Downloaded ${path.basename(url)}`)
-						})
-						.pipe(stream)
-						.on("close", () => {
-							resolve();
-						});
+		downloadAndSaveFiles(
+			modInfos.map(modInfo => {
+				return {
+					url: modInfo.downloadUrl
+					, path: path.join(SERVER_DEST_FOLDER, "mods", path.basename(modInfo.downloadUrl))
+					, hashes: [
+						{ id: "murmurhash", hashes: modInfo.packageFingerprint }
+					]
 				}
-				retry();
-			});
-		})).then(() => {
-			cb();
-		});
+			}), cb, {
+				concurrency: 100
+				, checkHashes: CONFIG.downloaderCheckHashes
+			}
+		);
 	})
 })
 
 task("copy-overrides", () => {
-	return src(["./modpack/overrides/**"])
-		.pipe(dest("./dest"));
+	return src(["./modpack/overrides/**", ...CONFIG.copyOverridesNegativeGlobs])
+		.pipe(dest(SERVER_DEST_FOLDER));
 });
 
 task("copy-serverfiles", () => {
 	return src(["./serverfiles/**"])
-		.pipe(dest("./dest"));
+		.pipe(dest(SERVER_DEST_FOLDER));
 });
+
+task("launchscripts", () => {
+	const rules = {
+		jvmArgs: CONFIG.launchscriptsJVMArgs
+		, minRAM: CONFIG.launchscriptsMinRAM
+		, maxRAM: CONFIG.launchscriptsMaxRAM
+	};
+
+	if (localStorage.forgeJar) {
+		rules.forgeJar = localStorage.forgeJar;
+	} else {
+		rules.forgeJar = "";
+		log.warn("No forgeJar specified!");
+		log.warn("Did the download-forge task fail?")
+	}
+
+	return src(['./launchscripts/**'])
+		.pipe(
+			through.obj((file, _, callback) => {
+				if (file.isBuffer()) {
+					const rendered = mustache.render(file.contents.toString(), rules);
+					file.contents = Buffer.from(rendered);
+				}
+				callback(null, file);
+			})
+		)
+		.pipe(dest(SERVER_DEST_FOLDER));
+})
+
+task("zip", () => {
+	return src(path.join(SERVER_DEST_FOLDER, "**"), { nodir: true, base: SERVER_DEST_FOLDER })
+		.pipe(zip("server.zip"))
+		.pipe(dest(ZIP_DEST_FOLDER));
+})
 
 exports.default = series(
 	"cleanup"
@@ -224,5 +362,7 @@ exports.default = series(
 	, "download-mods"
 	, "copy-overrides"
 	, "copy-serverfiles"
+	, "launchscripts"
 	, "post-cleanup"
+	, "zip"
 );
