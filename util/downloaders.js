@@ -145,14 +145,7 @@ class ConcurrentRetryDownloader extends EventEmitter {
 								/**
 								 * Check given hashes and throw if something doesn't match.
 								 */
-								try {
-									fileDef.hashes.forEach((hashInfo) => this.__checkHash(buffer, hashInfo));
-								} catch (error) {
-									return reject({
-										fileDef: fileDef
-										, error: error
-									})
-								}
+								fileDef.hashes.forEach((hashInfo) => this.__checkHash(buffer, hashInfo));
 							}
 
 							this.__emitComplete(fileDef, countDownloadedFiles++, total, buffer);
@@ -166,7 +159,7 @@ class ConcurrentRetryDownloader extends EventEmitter {
 								});
 							} else {
 								this.__emitRetry(fileDef, error, counter);
-								retry(counter);
+								setTimeout(() => retry(counter), 1000);
 							}
 						})	
 				}

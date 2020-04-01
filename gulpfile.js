@@ -377,7 +377,7 @@ task("download-mods", (cb) => {
 					url: fileInfo.downloadUrl
 					, path: path.join(SERVER_DEST_FOLDER, "mods", path.basename(fileInfo.downloadUrl))
 					, hashes: [
-						{ id: "murmurhash", hashes: modInfo.packageFingerprint }
+						{ id: "murmurhash", hashes: fileInfo.packageFingerprint }
 					]
 				}
 			}), cb
