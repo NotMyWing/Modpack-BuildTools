@@ -19,7 +19,7 @@ module.exports = {
 	 * * Forge libraries
 	 * * Modpack mods
 	 * 
-	 * @default 10
+	 * @default 50
 	 */
 	downloaderConcurrency: 50,
 

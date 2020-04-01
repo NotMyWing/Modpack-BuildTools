@@ -1,49 +1,53 @@
-const { src, task, series, dest } = require("gulp");
-const fs = require("fs");
-const del = require("del");
-const path = require("path");
-const zip = require("gulp-zip");
-const log = require("fancy-log");
-const unzip = require("unzipper");
-const Promise = require("bluebird");
-const { ConcurrentRetryDownloader, retryRequest } = require("./util/downloaders.js");
+const fs       = require("fs");
+const del      = require("del");
+const zip      = require("gulp-zip");
+const log      = require("fancy-log");
+const path     = require("path");
+const unzip    = require("unzipper");
+const Promise  = require("bluebird");
 const mustache = require("mustache");
-const through = require("through2");
+const through  = require("through2");
+
+const { src, task, series, dest } = require("gulp");
+const { ConcurrentRetryDownloader, retryRequest } = require("./util/downloaders.js");
 
 const MODPACK_MANIFEST = JSON.parse(fs.readFileSync("./modpack/manifest.json"));
 
-const FORGE_MAVEN = "https://files.minecraftforge.net/maven/";
-const MOJANG_MAVEN = "https://libraries.minecraft.net/";
-const ZIP_DEST_FOLDER = "build";
-
-const DEST_FOLDER = "build";
+const ZIP_DEST_FOLDER    = "build";
+const DEST_FOLDER        = "build";
 const SERVER_DEST_FOLDER = path.join(DEST_FOLDER, "server");
-const TEMP_FOLDER = path.join(DEST_FOLDER, "temp");
+const TEMP_FOLDER        = path.join(DEST_FOLDER, "temp");
 
-const LIBRARY_REG = /^(.+?):(.+?):(.+?)$/;
-
+/**
+ * Config!
+ * 
+ * Uses ./config.default.js for default values.
+ * 
+ * Please create ./config.js and overwrite values as you see fit.
+ * Don't modify the default file!
+ */
 const CONFIG = require("./config.default.js");
 if (!CONFIG || CONFIG.constructor !== Object) {
 	throw new Error(`Fatal Error: malformed default config file.`);
 }
 
-(() => {
-	const CUSTOM_CONFIG_PATH = "./config.js";
-	if (!CONFIG || CONFIG.constructor !== Object) {
-		throw new Error(`Fatal Error: malformed ${CONFIG_PATH}.`);
+const CUSTOM_CONFIG_PATH = "./config.js";
+
+/**
+ * If ./config.js exists, merge its values with the default config file.
+ */
+if (fs.existsSync(CUSTOM_CONFIG_PATH)) {
+	const customConfig = require(CUSTOM_CONFIG_PATH);
+	if (!customConfig || customConfig.constructor !== Object) {
+		throw new Error(`Fatal Error: malformed ${CUSTOM_CONFIG_PATH}.`);
 	}
 
-	if (fs.existsSync(CUSTOM_CONFIG_PATH)) {
-		const customConfig = require(CUSTOM_CONFIG_PATH);
-		if (!customConfig || customConfig.constructor !== Object) {
-			throw new Error(`Fatal Error: malformed ${CUSTOM_CONFIG_PATH}.`);
-		}
-
-		Object.assign(defaultConfig, customConfig);
-	}
-})();
+	Object.assign(defaultConfig, customConfig);
+}
 
 const localStorage = {};
+
+const LIBRARY_REG = /^(.+?):(.+?):(.+?)$/;
 
 /**
  * Parses the library name into path following the standard package naming convention.
@@ -90,6 +94,9 @@ task("create-folders", (cb) => {
 	cb();
 });
 
+/**
+ * Initialize the file downloader.
+ */
 const DOWNLOADER = new ConcurrentRetryDownloader({
 	concurrency  : CONFIG.downloaderConcurrency
 	, checkHashes: CONFIG.downloaderCheckHashes
@@ -152,6 +159,8 @@ const downloadAndSaveFiles = (files, callback = null) => {
 		});
 }
 
+const MOJANG_MAVEN = "https://libraries.minecraft.net/";
+
 /**
  * Library wrapper for downloadFiles.
  * 
@@ -182,8 +191,19 @@ const downloadLibraries = (libraries, callback = null) => {
 }
 
 const FORGE_VERSION_REG = /forge-(.+)/;
+const FORGE_MAVEN = "https://files.minecraftforge.net/maven/";
+
+/**
+ * Download the Forge jar.
+ * 
+ * Extract, parse the profile data and download required libraries.
+ */
 task("download-forge", (cb) => {
 	const minecraft = MODPACK_MANIFEST.minecraft;
+
+	/**
+	 * Break down the Forge version defined in manifest.json.
+	 */
 	const parsedForgeEntry = FORGE_VERSION_REG.exec(
 		(minecraft.modLoaders
 			.find(x => x.id && x.id.indexOf("forge") != -1
@@ -191,21 +211,33 @@ task("download-forge", (cb) => {
 	);
 
 	if (parsedForgeEntry) {
-		// Transform Forge version into Maven library
+		/**
+		 * Transform Forge version into Maven library path.
+		 */
 		const forgeMavenLibrary = `net.minecraftforge:forge:${minecraft.version}-${parsedForgeEntry[1]}`;
 		const forgeInstallerPath = libraryToPath(forgeMavenLibrary) + "-installer.jar";
 		const localForgePath = path.join(TEMP_FOLDER, path.basename(forgeInstallerPath));
 
-		// Download the Forge installer
+		/**
+		 * Fetch the Forge installer
+		 */
 		downloadAndSaveFiles([{
 			url: FORGE_MAVEN + forgeInstallerPath
 			, path: localForgePath
 		}], () => {
 			log("Extracting the Forge installer...")
+
+			/**
+			 * Extract the installer into temp folder.
+			 */
 			fs.createReadStream(localForgePath)
 				.pipe(unzip.Extract({ path: path.join(TEMP_FOLDER, "forge") }))
 				.on("close", () => {
 					log("Reading the manifest file...")
+
+					/**
+					 * Parse the profile manifest.
+					 */
 					const manifest = JSON.parse(
 						fs.readFileSync(path.join(TEMP_FOLDER, "forge", "install_profile.json"))
 					);
@@ -215,57 +247,90 @@ task("download-forge", (cb) => {
 							libraryToPath(forgeMavenLibrary) + "-universal.jar"
 						);
 
-						log("Copying the Forge file...")
+						/**
+						 * Move the universal jar into the dist folder.
+						 */
+						log("Moving the Forge file...")
 						fs.renameSync(
 							path.join(TEMP_FOLDER, "forge", forgeUniversalPath)
 							, path.join(SERVER_DEST_FOLDER, forgeUniversalPath)
 						);
 
+						/**
+						 * Save the universal jar file name for later.
+						 * 
+						 * We will need it to process launchscripts.
+						 */
 						localStorage.forgeJar = forgeUniversalPath;
 
 						log("Fetching server libraries...")
-						const serverLibraries = manifest
-							.versionInfo
-							.libraries
-							.filter(x => x.serverreq);
 
-						downloadLibraries(serverLibraries, cb);
+						/**
+						 * Finally, fetch libraries.
+						 */
+						downloadLibraries(
+							manifest
+								.versionInfo
+								.libraries
+								.filter(x => x.serverreq)
+							, cb
+						);
 					} else {
 						cb("Malformed Forge manifest file.")
 					}
 				});
 		});
+	} else {
+		cb("Malformed Forge version in manifest.json.")
 	}
 });
 
+/**
+ * Post-cleanups.
+ */
 task("post-cleanup", (cb) => {
 	del.sync(TEMP_FOLDER);
 	cb();
 })
 
 const LAUNCHERMETA_VERSION_MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest.json";
+
+/**
+ * Download the server jar.
+ */
 task("download-minecraft-server", (cb) => {
 	log("Fetching the Minecraft version manifest...")
 
+	/**
+	 * Fetch the manifest file of all Minecraft versions.
+	 */
 	retryRequest(
 		CONFIG.downloaderMaxRetries
 		, { uri: LAUNCHERMETA_VERSION_MANIFEST, json: true }
 	).then((manifest) => {
+		/**
+		 * Find the version defined in manifest.json.
+		 */
 		const version = manifest.versions.find(x => x.id == MODPACK_MANIFEST.minecraft.version);
-
 		if (version) {
 			log(`Fetching the manifest file for Minecraft ${version.id}...`)
 
+			/**
+			 * Fetch the version manifest file.
+			 */
 			retryRequest(
 				CONFIG.downloaderMaxRetries
 				, { uri: version.url, json: true }
-			).then((versionManifest) => {
-				const serverJarFile = `minecraft_server.${version.id}.jar`
-				
+			).then((versionManifest) => {			
 				if (versionManifest.downloads && versionManifest.downloads.server) {
+					/**
+					 * Fetch the server jar file.
+					 * 
+					 * Pass SHA1 hash to compare against the downloaded file.
+					 */
 					downloadAndSaveFiles([{
 						url: versionManifest.downloads.server.url
-						, path: path.join(SERVER_DEST_FOLDER, serverJarFile)
+						, path: path.join(SERVER_DEST_FOLDER, `minecraft_server.${version.id}.jar`)
 						, hashes: [
 							{ id: "sha1", hashes: versionManifest.downloads.server.sha1 }
 						]
@@ -280,9 +345,16 @@ task("download-minecraft-server", (cb) => {
 	});
 });
 
+/**
+ * Downloads mods according to manifest.json and checks hashes.
+ */
 task("download-mods", (cb) => {
 	log("Fetching mods...");
 	
+	/**
+	 * Fetch file descriptions for download urls and hashes
+	 * by mapping files to Promises.
+	 */
 	Promise.map(MODPACK_MANIFEST.files, file => {
 		return retryRequest(
 			CONFIG.downloaderMaxRetries
@@ -291,36 +363,49 @@ task("download-mods", (cb) => {
 				, json: true
 			}
 		)
-	}, { concurrency: CONFIG.downloaderConcurrency }).then(modInfos => {
-		log(`Fetched ${modInfos.length} mods...`);
+	}, { concurrency: CONFIG.downloaderConcurrency }).then(fileInfos => {
+		log(`Fetched ${fileInfos.length} mods...`);
 
+		/**
+		 * Download and save mod files.
+		 * 
+		 * Pass mod fingerprints to compare against downloaded files.
+		 */
 		downloadAndSaveFiles(
-			modInfos.map(modInfo => {
+			fileInfos.map(fileInfo => {
 				return {
-					url: modInfo.downloadUrl
-					, path: path.join(SERVER_DEST_FOLDER, "mods", path.basename(modInfo.downloadUrl))
+					url: fileInfo.downloadUrl
+					, path: path.join(SERVER_DEST_FOLDER, "mods", path.basename(fileInfo.downloadUrl))
 					, hashes: [
 						{ id: "murmurhash", hashes: modInfo.packageFingerprint }
 					]
 				}
-			}), cb, {
-				concurrency: 100
-				, checkHashes: CONFIG.downloaderCheckHashes
-			}
+			}), cb
 		);
 	})
 })
 
+/**
+ * Copies modpack overrides.
+ */
 task("copy-overrides", () => {
 	return src(["./modpack/overrides/**", ...CONFIG.copyOverridesNegativeGlobs])
 		.pipe(dest(SERVER_DEST_FOLDER));
 });
 
+/**
+ * Copies files from ./serverfiles into dest folder.
+ */
 task("copy-serverfiles", () => {
 	return src(["./serverfiles/**"])
 		.pipe(dest(SERVER_DEST_FOLDER));
 });
 
+/**
+ * Copies files from ./launchscripts into dest folder and processes them using mustache.
+ * 
+ * Replaces jvmArgs, minRAM, maxRAM and forgeJar.
+ */
 task("launchscripts", () => {
 	const rules = {
 		jvmArgs: CONFIG.launchscriptsJVMArgs
@@ -349,6 +434,9 @@ task("launchscripts", () => {
 		.pipe(dest(SERVER_DEST_FOLDER));
 })
 
+/**
+ * Zips the dest folder.
+ */
 task("zip", () => {
 	return src(path.join(SERVER_DEST_FOLDER, "**"), { nodir: true, base: SERVER_DEST_FOLDER })
 		.pipe(zip("server.zip"))
