@@ -11,7 +11,7 @@ before-deploy:
 deploy:
   - provider: releases
     overwrite: true
-    tag: $TAG
+    tag_name: $TAG
     skip_cleanup: true
     token: "$GITHUB_TOKEN"
     file:
