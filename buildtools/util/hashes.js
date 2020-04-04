@@ -49,3 +49,35 @@ const sha1 = require("sha1");
 exports.sha1 = (inputBuffer) => {
 	return sha1(inputBuffer);
 };
+
+/**
+ * @typedef {object} HashDef
+ * @property {string} id Hash algorithm.
+ * @property {any|any[]} hashes Hashes to compare against.
+ */
+
+const hashFuncs = {
+	murmurhash: exports.murmurhash
+	, sha1: exports.sha1
+}
+ 
+/**
+ * Compare buffer to the given HashDef. 
+ * 
+ * @param {Buffer} buffer 
+ * @param {HashDef} hashDef
+ * 
+ * @throws {Error} Throws a generic error if hashes don't match.
+ */
+exports.compareBufferToHashDef = (buffer, hashDef) => {
+	if (!hashFuncs[hashDef.id]) {
+		throw new Error(`No hash function found for ${hashDef.id}.`);
+	}
+	
+	const sum = hashFuncs[hashDef.id](buffer);
+	if (Array.isArray(hashDef.hashes) && hashDef.hashes.includes(sum) || hashDef.hashes == sum) {
+		return true;
+	} else {
+		throw new Error(`Hash sum mismatch. (expected ${hashDef.hashes.toString()}, got ${sum})`);
+	}
+}

@@ -1,98 +1,22 @@
+const { libraryToPath } = require("../../util/util")
 const fs       = require("fs");
-const del      = require("del");
-const zip      = require("gulp-zip");
 const log      = require("fancy-log");
-const path     = require("path");
+const path     = require("path").posix;
 const unzip    = require("unzipper");
-const Promise  = require("bluebird");
+const zip      = require("gulp-zip");
 const mustache = require("mustache");
 const through  = require("through2");
 
-const { src, task, series, dest } = require("gulp");
-const { ConcurrentRetryDownloader, retryRequest } = require("./util/downloaders.js");
+const { src, dest } = require("gulp");
 
-const MODPACK_MANIFEST = JSON.parse(fs.readFileSync("./modpack/manifest.json"));
+const { ConcurrentRetryDownloader, retryRequest } = require("../../util/downloaders.js");
 
-const ZIP_DEST_FOLDER    = "build";
-const DEST_FOLDER        = "build";
+const SRC_FOLDER         = CONFIG.buildSourceDirectory;
+const DEST_FOLDER        = CONFIG.buildDestinationDirectory;
 const SERVER_DEST_FOLDER = path.join(DEST_FOLDER, "server");
 const TEMP_FOLDER        = path.join(DEST_FOLDER, "temp");
 
-/**
- * Config!
- * 
- * Uses ./config.default.js for default values.
- * 
- * Please create ./config.js and overwrite values as you see fit.
- * Don't modify the default file!
- */
-const CONFIG = require("./config.default.js");
-if (!CONFIG || CONFIG.constructor !== Object) {
-	throw new Error(`Fatal Error: malformed default config file.`);
-}
-
-const CUSTOM_CONFIG_PATH = "./config.js";
-
-/**
- * If ./config.js exists, merge its values with the default config file.
- */
-if (fs.existsSync(CUSTOM_CONFIG_PATH)) {
-	const customConfig = require(CUSTOM_CONFIG_PATH);
-	if (!customConfig || customConfig.constructor !== Object) {
-		throw new Error(`Fatal Error: malformed ${CUSTOM_CONFIG_PATH}.`);
-	}
-
-	Object.assign(defaultConfig, customConfig);
-}
-
-const localStorage = {};
-
-const LIBRARY_REG = /^(.+?):(.+?):(.+?)$/;
-
-/**
- * Parses the library name into path following the standard package naming convention.
- * 
- * Turns `package:name:version` into `package/name/version/name-version`.
- * 
- * @param {string} library 
- */
-const libraryToPath = (library) => {
-	const parsedLibrary = LIBRARY_REG.exec(library);
-	if (parsedLibrary) {
-		const package = parsedLibrary[1].replace(/\./g, "/");
-		const name = parsedLibrary[2];
-		const version = parsedLibrary[3];
-
-		const newURL = `${package}/${name}/${version}/${name}-${version}`
-
-		return newURL;
-	}
-}
-
-/**
- * Clean-up. Recursively removes `./dest/**`
- */
-task("cleanup", (cb) => {
-	del.sync(DEST_FOLDER);
-	cb();
-});
-
-/**
- * Creates `dest` and `temp` folders.
- */
-task("create-folders", (cb) => {
-	const toCreate = [
-		SERVER_DEST_FOLDER,
-		TEMP_FOLDER
-	];
-
-	toCreate.forEach((dir) => {
-		log(`Creating folder ${path.normalize(dir)}`);
-		fs.mkdirSync(path.resolve(dir), { recursive: true })
-	});
-
-	cb();
-});
+const Promise = require("bluebird");
 
 /**
  * Initialize the file downloader.
@@ -190,6 +114,21 @@ const downloadLibraries = (libraries, callback = null) => {
 	);
 }
 
+function createServerDirs(cb) {
+	const toCreate = [
+		SERVER_DEST_FOLDER,
+		TEMP_FOLDER
+	];
+
+	toCreate.forEach((dir) => {
+		log(`Creating folder ${path.normalize(dir)}`);
+		fs.mkdirSync(dir, { recursive: true })
+	});
+
+	cb();
+}
+
+
 const FORGE_VERSION_REG = /forge-(.+)/;
 const FORGE_MAVEN = "https://files.minecraftforge.net/maven/";
 
@@ -198,7 +137,7 @@ const FORGE_MAVEN = "https://files.minecraftforge.net/maven/";
  * 
  * Extract, parse the profile data and download required libraries.
  */
-task("download-forge", (cb) => {
+function downloadForge(cb) {
 	const minecraft = MODPACK_MANIFEST.minecraft;
 
 	/**
@@ -261,7 +200,7 @@ task("download-forge", (cb) => {
 						 * 
 						 * We will need it to process launchscripts.
 						 */
-						localStorage.forgeJar = forgeUniversalPath;
+						LOCAL_STORAGE.forgeJar = forgeUniversalPath;
 
 						log("Fetching server libraries...")
 
@@ -283,22 +222,14 @@ task("download-forge", (cb) => {
 	} else {
 		cb("Malformed Forge version in manifest.json.")
 	}
-});
-
-/**
- * Post-cleanups.
- */
-task("post-cleanup", (cb) => {
-	del.sync(TEMP_FOLDER);
-	cb();
-})
+};
 
 const LAUNCHERMETA_VERSION_MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest.json";
 
 /**
  * Download the server jar.
  */
-task("download-minecraft-server", (cb) => {
+function downloadMinecraftServer(cb) {
 	log("Fetching the Minecraft version manifest...")
 
 	/**
@@ -343,12 +274,12 @@ task("download-minecraft-server", (cb) => {
 			cb(`Couldn't find ${MODPACK_MANIFEST.minecraft.version} in the version manifest.`);
 		}
 	});
-});
+};
 
 /**
  * Downloads mods according to manifest.json and checks hashes.
  */
-task("download-mods", (cb) => {
+function downloadMods(cb) {
 	log("Fetching mods...");
 	
 	/**
@@ -375,7 +306,7 @@ task("download-mods", (cb) => {
 			fileInfos.map(fileInfo => {
 				return {
 					url: fileInfo.downloadUrl
-					, path: path.join(SERVER_DEST_FOLDER, "mods", path.basename(fileInfo.downloadUrl))
+					, path: path.join(SERVER_DEST_FOLDER, "mods", fileInfo.fileName)
 					, hashes: [
 						{ id: "murmurhash", hashes: fileInfo.packageFingerprint }
 					]
@@ -383,45 +314,54 @@ task("download-mods", (cb) => {
 			}), cb
 		);
 	})
-})
+};
 
 /**
  * Copies modpack overrides.
  */
-task("copy-overrides", () => {
-	return src(["./modpack/overrides/**", ...CONFIG.copyOverridesNegativeGlobs])
+function copyServerOverrides() {
+	const basedir = path.join(SRC_FOLDER, OVERRIDES_FOLDER);
+	return src(CONFIG.copyOverridesServerGlobs.map(glob => path.join(basedir, glob)), { base: basedir })
 		.pipe(dest(SERVER_DEST_FOLDER));
-});
+};
 
 /**
  * Copies files from ./serverfiles into dest folder.
  */
-task("copy-serverfiles", () => {
-	return src(["./serverfiles/**"])
+function copyServerfiles() {
+	return src(["../serverfiles/**"])
 		.pipe(dest(SERVER_DEST_FOLDER));
-});
+};
+
+/**
+ * Copies the license file.
+ */
+function copyServerLicense() {
+	return src("../LICENSE.md")
+		.pipe(dest(SERVER_DEST_FOLDER));
+};
 
 /**
  * Copies files from ./launchscripts into dest folder and processes them using mustache.
  * 
  * Replaces jvmArgs, minRAM, maxRAM and forgeJar.
  */
-task("launchscripts", () => {
+function processLaunchscripts() {
 	const rules = {
 		jvmArgs: CONFIG.launchscriptsJVMArgs
 		, minRAM: CONFIG.launchscriptsMinRAM
 		, maxRAM: CONFIG.launchscriptsMaxRAM
 	};
 
-	if (localStorage.forgeJar) {
-		rules.forgeJar = localStorage.forgeJar;
+	if (LOCAL_STORAGE.forgeJar) {
+		rules.forgeJar = LOCAL_STORAGE.forgeJar;
 	} else {
 		rules.forgeJar = "";
 		log.warn("No forgeJar specified!");
 		log.warn("Did the download-forge task fail?")
 	}
 
-	return src(['./launchscripts/**'])
+	return src(['../launchscripts/**'])
 		.pipe(
 			through.obj((file, _, callback) => {
 				if (file.isBuffer()) {
@@ -432,26 +372,25 @@ task("launchscripts", () => {
 			})
 		)
 		.pipe(dest(SERVER_DEST_FOLDER));
-})
+};
 
 /**
- * Zips the dest folder.
+ * Zips the server directory.
  */
-task("zip", () => {
+function zipServer() {
 	return src(path.join(SERVER_DEST_FOLDER, "**"), { nodir: true, base: SERVER_DEST_FOLDER })
 		.pipe(zip("server.zip"))
-		.pipe(dest(ZIP_DEST_FOLDER));
-})
+		.pipe(dest(DEST_FOLDER));
+}
 
-exports.default = series(
-	"cleanup"
-	, "create-folders"
-	, "download-forge"
-	, "download-minecraft-server"
-	, "download-mods"
-	, "copy-overrides"
-	, "copy-serverfiles"
-	, "launchscripts"
-	, "post-cleanup"
-	, "zip"
-);
+module.exports = [
+	createServerDirs,
+	downloadForge,
+	downloadMinecraftServer,
+	downloadMods,
+	copyServerOverrides,
+	copyServerfiles,
+	copyServerLicense,
+	processLaunchscripts,
+	zipServer
+]

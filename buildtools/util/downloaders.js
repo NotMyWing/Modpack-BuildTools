@@ -2,17 +2,7 @@ const request = require("request-promise");
 const Promise = require("bluebird");
 const EventEmitter = require('events');
 
-const hashes = require("./hashes.js")
-const hashFuncs = {
-	murmurhash: hashes.murmurhash
-	, sha1: hashes.sha1
-}
-
-/**
- * @typedef {object} HashDef
- * @property {string} id Hash algorithm.
- * @property {any|any[]} hashes Hashes to compare against.
- */
+const { compareBufferToHashDef } = require("./hashes.js")
 
 /**
  * @typedef {object} FileDef
@@ -145,7 +135,7 @@ class ConcurrentRetryDownloader extends EventEmitter {
 								/**
 								 * Check given hashes and throw if something doesn't match.
 								 */
-								fileDef.hashes.forEach((hashInfo) => this.__checkHash(buffer, hashInfo));
+								fileDef.hashes.forEach((hashInfo) => compareBufferToHashDef(buffer, hashInfo));
 							}
 
 							this.__emitComplete(fileDef, countDownloadedFiles++, total, buffer);
@@ -167,25 +157,6 @@ class ConcurrentRetryDownloader extends EventEmitter {
 				return retry();
 			})
 		}, {concurrency: this.concurrency});
-	}
-
-	/**
-	 * Internal. Compare buffer to the given HashDef. 
-	 * 
-	 * @param {Buffer} buffer 
-	 * @param {HashDef} hashDef 
-	 */
-	__checkHash(buffer, hashDef) {
-		if (!hashFuncs[hashDef.id]) {
-			throw new Error(`No hash function found for ${hashDef.id}.`);
-		}
-		
-		const sum = hashFuncs[hashDef.id](buffer);
-		if (Array.isArray(hashDef.hashes) && hashDef.hashes.includes(sum) || hashDef.hashes == sum) {
-			return true;
-		} else {
-			throw new Error(`Hash sum mismatch. (expected ${hashDef.hashes.toString()}, got ${sum})`);
-		}
 	}
 }
 
