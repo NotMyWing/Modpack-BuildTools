@@ -38,11 +38,6 @@ async function setupOctokit(cb) {
  *
  */
 async function fetchAndRemovePrereleaseRelease(cb) {
-	if (process.env.TRAVIS_TAG) {
-		log("Tagged build, bailing out.");
-		cb();
-	}
-
 	const releases = await octokit.repos.listReleases({
 		owner: LOCAL_STORAGE.GITHUB_OWNER,
 		repo: LOCAL_STORAGE.GITHUB_REPO,
@@ -73,11 +68,6 @@ async function fetchAndRemovePrereleaseRelease(cb) {
  *
  */
 async function fetchAndRemovePrereleaseTag(cb) {
-	if (process.env.TRAVIS_TAG) {
-		log("Tagged build, bailing out.");
-		cb();
-	}
-
 	const tags = await octokit.repos.listTags({
 		owner: LOCAL_STORAGE.GITHUB_OWNER,
 		repo: LOCAL_STORAGE.GITHUB_REPO,
