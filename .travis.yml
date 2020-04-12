@@ -37,7 +37,7 @@ deploy:
   - provider: script
     edge: true
     skip_cleanup: true
-    script: gulp deployCurseForge
+    script: cd ./buildtools && npx gulp deployCurseForge && cd ../
     on:
       tags: true
       condition: $TAGGED_RELEASE = true

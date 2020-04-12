@@ -31,7 +31,8 @@ async function deployCurseForge(cb) {
 		uri: CURSEFORGE_ENDPOINT + "api/game/versions",
 		headers: tokenHeaders,
 		method: "GET",
-	}) || {};
+		json: true
+	}) || [];
 
 	const version = versionsManifest
 		.find(m => m.name == global.MODPACK_MANIFEST.minecraft.version);
@@ -49,24 +50,18 @@ async function deployCurseForge(cb) {
 					"Content-Type": "multipart/form-data"
 				},
 				formData: {
-					metadata: {
-						gameVersions: [ version.id ],
+					metadata: JSON.stringify({
+						changelog: "",
 						releaseType: "release",
-					}, 
-					file: {
-						value: fs.createReadStream(path.join(global.DEST)),
-						options: {
-							filename: `${file}.zip`,
-							contentType: 'application/zip'
-						}
-					}
-
-				}
+						parentFileID: clientFileID,
+						gameVersions: clientFileID ? undefined : [ version.id ],
+					}), 
+					file: fs.createReadStream(path.join(global.CONFIG.buildDestinationDirectory, `${file}.zip`)),
+				},
+				json: true
 			};
 
 			if (clientFileID) {
-				options.formData.metadata.parentFileID = clientFileID;
-
 				log(`Uploading ${file} to CurseForge... (child of ${clientFileID})`);
 			} else {
 				log(`Uploading ${file} to CurseForge...`);
