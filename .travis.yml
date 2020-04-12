@@ -34,7 +34,7 @@ deploy:
       condition: $TAGGED_RELEASE = true
 
   # Deploy release to CurseForge
-  - provider: releases
+  - provider: script
     skip_cleanup: true
     script: gulp deployCurseForge
     on:
